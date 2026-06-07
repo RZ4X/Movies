@@ -1272,6 +1272,7 @@ class FaselHDProvider : MainAPI() {
     private fun parseSeasonNumber(title: String): Int? {
         val cleanTitle = title.trim()
         val lowerTitle = cleanTitle.lowercase()
+        println("FaselHD Debug: parseSeasonNumber analyzing title='$cleanTitle'")
 
         // Priority 1: Arabic ordinal words (الموسم الأول = S1, الموسم الثاني = S2, etc.)
         val ordinalMap = listOf(
@@ -1289,7 +1290,10 @@ class FaselHDProvider : MainAPI() {
             listOf("الثاني عشر", "الثانية عشرة") to 12
         )
         for ((words, num) in ordinalMap) {
-            if (words.any { it in lowerTitle }) return num
+            if (words.any { it in lowerTitle }) {
+                println("FaselHD Debug: parseSeasonNumber found arabic ordinal ($num) for title='$cleanTitle'")
+                return num
+            }
         }
 
         // Priority 2: Number DIRECTLY after season keyword (e.g. "الموسم 3", "Season 3", "S3")
@@ -1298,10 +1302,13 @@ class FaselHDProvider : MainAPI() {
             """(?:الموسم|موسم|season|s)\s*(\d{1,2})(?:\D|$)""",
             RegexOption.IGNORE_CASE
         ).find(lowerTitle)?.groupValues?.get(1)?.toIntOrNull()
-        if (afterKeyword != null) return afterKeyword
+        if (afterKeyword != null) {
+            println("FaselHD Debug: parseSeasonNumber found keyword number ($afterKeyword) for title='$cleanTitle'")
+            return afterKeyword
+        }
 
         // Priority 3: English ordinals
-        return when {
+        val englishOrdinal = when {
             "first" in lowerTitle -> 1
             "second" in lowerTitle -> 2
             "third" in lowerTitle -> 3
@@ -1313,8 +1320,14 @@ class FaselHDProvider : MainAPI() {
             "ninth" in lowerTitle -> 9
             "tenth" in lowerTitle -> 10
             else -> null
-            // NOTE: No bare \d+ fallback — that caused "season 75" false positives from series IDs/years
         }
+        
+        if (englishOrdinal != null) {
+            println("FaselHD Debug: parseSeasonNumber found english ordinal ($englishOrdinal) for title='$cleanTitle'")
+        } else {
+            println("FaselHD Debug: parseSeasonNumber failed to extract number from title='$cleanTitle'")
+        }
+        return englishOrdinal
     }
 
     private fun extractUrlFromOnclick(onclick: String, host: String): String? {
@@ -1327,15 +1340,26 @@ class FaselHDProvider : MainAPI() {
         val rawLinks = doc.select(
             "#epAll a, div.epAll a, #DivEpisodesList a, .episodes-list a, a[href*='/episodes/']"
         )
-        return rawLinks.mapIndexed { idx, el ->
-            val epUrl = normalizeUrl(el.attr("abs:href"), host)
+        println("FaselHD Debug: parseEpisodesFromDoc found ${rawLinks.size} raw episode links")
+        
+        val episodes = rawLinks.mapIndexed { idx, el ->
+            var rawHref = el.attr("href")
+            if (rawHref.startsWith("/")) rawHref = "$host$rawHref"
+            
+            val epUrl = normalizeUrl(rawHref, host)
             val epTitle = el.text().trim()
             val epNum = Regex("""\d+""").find(epTitle)?.value?.toIntOrNull() ?: (idx + 1)
+            
+            println("FaselHD Debug: parsed episode -> title='$epTitle', url='$epUrl', num=$epNum")
+            
             newEpisode(epUrl) {
                 name = epTitle
                 episode = epNum
             }
         }.distinctBy { it.data }
+        
+        println("FaselHD Debug: parseEpisodesFromDoc returning ${episodes.size} distinct episodes")
+        return episodes
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -1372,15 +1396,20 @@ class FaselHDProvider : MainAPI() {
                 doc.select("#seasonList, div.seasonLoop, .seasonDiv, #epAll, div.epAll, #DivEpisodesList").isNotEmpty() ||
                 doc.select("a[href*='/episodes/']").isNotEmpty()
 
+        println("FaselHD Debug: load isEpisodePage=$isEpisodePage, isSeries=$isSeries for url=$pageUrl")
+
         return when {
             isSeries -> {
                 val seasons = mutableListOf<ParsedSeason>()
                 val seasonElements = doc.select("#seasonList a, div.seasonLoop a, #seasonList .seasonDiv, div.seasonLoop .seasonDiv, .seasonDiv")
+                println("FaselHD Debug: load found ${seasonElements.size} season elements")
                 
                 seasonElements.forEachIndexed { idx, el ->
                     val sTitle = el.text().trim()
                     val url = if (el.tagName() == "a") {
-                        el.attr("abs:href")
+                        var h = el.attr("href")
+                        if (h.startsWith("/")) h = "$host$h"
+                        h
                     } else {
                         val onclick = el.attr("onclick")
                         if (onclick.isNotEmpty()) extractUrlFromOnclick(onclick, host) else null
@@ -1388,17 +1417,22 @@ class FaselHDProvider : MainAPI() {
                     if (!url.isNullOrBlank()) {
                         val sUrl = normalizeUrl(url, host)
                         val sNum = parseSeasonNumber(sTitle) ?: (idx + 1)
+                        println("FaselHD Debug: extracted season url=$sUrl, title='$sTitle', num=$sNum")
                         seasons.add(ParsedSeason(sTitle, sUrl, sNum))
+                    } else {
+                        println("FaselHD Debug: failed to extract url for season element title='$sTitle'")
                     }
                 }
 
                 val allEpisodes = mutableListOf<Episode>()
 
                 if (seasons.isEmpty()) {
+                    println("FaselHD Debug: no seasons found, parsing episodes from main doc directly")
                     val eps = parseEpisodesFromDoc(doc, host)
                     eps.forEach { it.season = 1 }
                     allEpisodes.addAll(eps)
                 } else {
+                    println("FaselHD Debug: fetching ${seasons.distinctBy { it.url }.size} seasons concurrently")
                     val deferreds = seasons.distinctBy { it.url }.map { season ->
                         ioScope.async {
                             try {
@@ -1406,12 +1440,14 @@ class FaselHDProvider : MainAPI() {
                                 if (sDoc != null) {
                                     val eps = parseEpisodesFromDoc(sDoc, host)
                                     eps.forEach { it.season = season.seasonNumber }
+                                    println("FaselHD Debug: season ${season.seasonNumber} loaded ${eps.size} episodes")
                                     eps
                                 } else {
+                                    println("FaselHD Debug: failed to load doc for season ${season.seasonNumber}")
                                     emptyList()
                                 }
                             } catch (e: Throwable) {
-                                println("FaselHD: Error fetching season ${season.seasonNumber}: ${e.message}")
+                                println("FaselHD Debug: Error fetching season ${season.seasonNumber}: ${e.message}")
                                 emptyList()
                             }
                         }
@@ -1433,6 +1469,8 @@ class FaselHDProvider : MainAPI() {
 
                 val sortedEpisodes = allEpisodes.distinctBy { it.data }
                     .sortedWith(compareBy({ it.season ?: 1 }, { it.episode ?: 1 }))
+
+                println("FaselHD Debug: load TVSeries returning ${sortedEpisodes.size} episodes")
 
                 newTvSeriesLoadResponse(title, pageUrl, TvType.TvSeries, sortedEpisodes) {
                     posterUrl = finalPoster
