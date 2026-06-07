@@ -14,6 +14,8 @@ import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.network.WebViewResolver
+import com.lagradost.nicehttp.requestCreator
 import okhttp3.Cookie
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.CoroutineScope
@@ -724,31 +726,37 @@ class FaselHDProvider : MainAPI() {
                 return@runCatching plainDoc
             }
 
-            println("FaselHD: Plain GET failed or blocked, trying CloudflareKiller for $url")
+            println("FaselHD: Plain GET failed or blocked, trying WebViewResolver for $url")
             mutex.withLock {
                 try {
+                    // This explicitly forces CloudStream to open a hidden WebView and solve Cloudflare/Turnstile
+                    val resolver = WebViewResolver(Regex("faselhdx\\.bid|fasel-hd\\.cam"))
+                    resolver.resolveUsingWebView(
+                        requestCreator("GET", url, headers = finalHeaders)
+                    )
+                    
+                    // After WebView finishes, we do a fresh okhttp request which will use the solved cookies!
                     val cfRes = app.get(
                         url,
-                        headers = headers(mainUrl, referer),
-                        interceptor = cfKiller,
+                        headers = finalHeaders,
                         timeout = 120
                     )
                     val cfDoc = cfRes.document
-                    println("FaselHD: CloudflareKiller status=${cfRes.code} for $url")
+                    println("FaselHD: WebViewResolver secondary request status=${cfRes.code} for $url")
                     
                     if (cfRes.isSuccessful) {
                         delay(2000)
                         if (!isBlocked(cfDoc)) {
-                            println("FaselHD: CloudflareKiller successfully bypassed for $url")
+                            println("FaselHD: WebViewResolver successfully bypassed for $url")
                             return@runCatching cfDoc
                         } else {
-                            println("FaselHD: CloudflareKiller returned 200 but HTML is still blocked! HTML snippet: ${cfDoc.body()?.text()?.take(200)}")
+                            println("FaselHD: WebViewResolver returned 200 but HTML is still blocked! HTML snippet: ${cfDoc.body()?.text()?.take(200)}")
                         }
                     } else {
-                        println("FaselHD: CloudflareKiller returned non-success code ${cfRes.code}. HTML snippet: ${cfDoc.body()?.text()?.take(200)}")
+                        println("FaselHD: WebViewResolver returned non-success code ${cfRes.code}. HTML snippet: ${cfDoc.body()?.text()?.take(200)}")
                     }
                 } catch (e: Exception) {
-                    println("FaselHD: CloudflareKiller threw exception: ${e.message}")
+                    println("FaselHD: WebViewResolver threw exception: ${e.message}")
                 }
                 null
             }
