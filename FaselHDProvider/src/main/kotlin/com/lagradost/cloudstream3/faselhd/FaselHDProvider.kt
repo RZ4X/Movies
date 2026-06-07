@@ -1197,19 +1197,27 @@ class FaselHDProvider : MainAPI() {
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val title = selectFirst("div.h1, .entry-title, h3, .title, .h5, h5, .h4, h4")?.text()
-            ?: selectFirst("img")?.attr("alt")?.takeIf { it.isNotEmpty() }
+        // Site uses <div class="h1"> for titles (confirmed from live HTML)
+        val title = selectFirst("div.h1, .h1, div.h4, .h4, div.h5, .h5, .entry-title, h1, h2, h3, h4, h5")?.text()?.trim()
+            ?: selectFirst("img")?.attr("alt")?.trim()?.takeIf { it.isNotEmpty() }
             ?: return null
 
-        val href = selectFirst("a")?.attr("abs:href")
+        if (title.isBlank()) return null
+
+        val rawHref = selectFirst("a")?.attr("abs:href")
             ?.takeIf { it.startsWith("http") }
             ?: return null
 
+        // Normalize the URL to the resolved host (site redirects between fasel-hd.cam and faselhdx.bid)
+        val href = normalizeUrl(rawHref, mainUrl)
+
+        // Lazy-loaded images use blank.gif as src — must check data-src first
         val img = selectFirst("img")
         val poster = img?.let {
             listOf("data-src", "data-original", "data-lazy-src", "src")
                 .map { attr -> it.attr(attr) }
-                .firstOrNull { it.isNotEmpty() }
+                .firstOrNull { v -> v.isNotEmpty() && !v.contains("blank.gif") }
+                ?: it.attr("data-src").takeIf { it.isNotEmpty() }  // fallback: even blank.gif data-src
         }?.let {
             when {
                 it.startsWith("http") -> it
@@ -1220,12 +1228,18 @@ class FaselHDProvider : MainAPI() {
         }
 
         val quality = selectFirst("span.quality, span.qualitySpan")?.text()
-        val type = if (href.contains("/episode/") || href.contains("/episodes/")) TvType.TvSeries else TvType.Movie
+
+        // Detect series by all episode URL patterns used by the site
+        val isEpisodeUrl = rawHref.contains("/episodes/") || rawHref.contains("/episode/") ||
+            rawHref.contains("-episodes/") || rawHref.contains("/tvepisodes/") ||
+            rawHref.contains("/anime-episodes/") || rawHref.contains("/asian-episodes/")
+        val isSeriesUrl = rawHref.contains("/series/") || rawHref.contains("/anime/") ||
+            rawHref.contains("/tvshows/") || rawHref.contains("/asian-series/")
+        val type = if (isEpisodeUrl || isSeriesUrl) TvType.TvSeries else TvType.Movie
 
         return newMovieSearchResponse(title, href, type) {
             posterUrl = poster?.takeIf { it.isNotBlank() }
             this.quality = getQualityFromString(quality)
-
             buildPosterHeaders(posterUrl, href)?.let {
                 posterHeaders = it
             }
