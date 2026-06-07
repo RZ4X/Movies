@@ -707,11 +707,21 @@ class FaselHDProvider : MainAPI() {
         println("FaselHD: safeGet -> $url (Referer: $referer)")
         val finalHeaders = headers(mainUrl, referer) + (headers ?: emptyMap())
         return runCatching {
-            val res = app.get(url, headers = finalHeaders, timeout = 15)
-            val doc = res.document
-            if (res.isSuccessful && !isBlocked(doc)) {
-                println("FaselHD: Plain GET successful for $url")
-                return doc
+            var plainDoc: Document? = null
+            var plainSuccess = false
+            try {
+                val res = app.get(url, headers = finalHeaders, timeout = 15)
+                plainDoc = res.document
+                if (res.isSuccessful && !isBlocked(plainDoc)) {
+                    println("FaselHD: Plain GET successful for $url")
+                    plainSuccess = true
+                }
+            } catch (e: Exception) {
+                println("FaselHD: Plain GET threw exception: ${e.message}")
+            }
+
+            if (plainSuccess && plainDoc != null) {
+                return@runCatching plainDoc
             }
 
             println("FaselHD: Plain GET failed or blocked, trying CloudflareKiller for $url")
@@ -726,7 +736,7 @@ class FaselHDProvider : MainAPI() {
                 if (cfRes.isSuccessful) {
                     println("FaselHD: CloudflareKiller successful for $url")
                     delay(2000)
-                    if (!isBlocked(cfDoc)) return cfDoc
+                    if (!isBlocked(cfDoc)) return@runCatching cfDoc
                 }
                 println("FaselHD: CloudflareKiller failed or still blocked for $url")
                 null
