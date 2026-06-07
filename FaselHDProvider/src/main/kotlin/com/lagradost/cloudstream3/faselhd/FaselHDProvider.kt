@@ -1163,10 +1163,10 @@ class FaselHDProvider : MainAPI() {
         }
     }
     override val mainPage = mainPageOf(
+        "/main" to "الرئيسية",
         "/most_recent" to "المضاف حديثاً",
-        "/series" to "مسلسلات",
         "/movies" to "أفلام",
-        "/asian-series" to "مسلسلات آسيوية",
+        "/series" to "مسلسلات",
         "/anime" to "الأنمي",
         "/tvshows" to "البرامج التلفزيونية",
         "/dubbed-movies" to "أفلام مدبلجة",
@@ -1184,7 +1184,7 @@ class FaselHDProvider : MainAPI() {
 
         // Select all content items — slider + grid — then deduplicate by URL
         val results = doc.select(
-            "div.postDiv, article, .entry-box, .blockMovie, .epDivHome"
+            "div.postDiv, article, .entry-box, .blockMovie, .epDivHome, .swiper-slide"
         ).mapNotNull { it.toSearchResult() }.distinctBy { it.url }
 
         return newHomePageResponse(request.name, results)
@@ -1204,9 +1204,12 @@ class FaselHDProvider : MainAPI() {
 
         if (title.isBlank()) return null
 
-        val rawHref = selectFirst("a")?.attr("abs:href")
-            ?.takeIf { it.startsWith("http") }
-            ?: return null
+        var rawHref = selectFirst("a")?.attr("href") ?: return null
+        if (rawHref.startsWith("/")) {
+            rawHref = "$mainUrl$rawHref"
+        } else if (!rawHref.startsWith("http")) {
+            return null
+        }
 
         // Normalize the URL to the resolved host (site redirects between fasel-hd.cam and faselhdx.bid)
         val href = normalizeUrl(rawHref, mainUrl)
